@@ -151,7 +151,7 @@
     }
 
     // ==========================================
-    // COMUNICAZIONE COL DATABASE (AGGIORNATA)
+    // COMUNICAZIONE COL DATABASE (AGGIORNATA PER CORS SICURO)
     // ==========================================
 
     async function loadDataFromGoogleSheets(silent = false) {
@@ -164,13 +164,10 @@
             const cacheBuster = new Date().getTime();
             const fetchUrl = `${SCRIPT_URL}?action=getData&t=${cacheBuster}`;
 
+            // Eseguiamo la fetch senza headers custom, altrimenti Google blocca con errore CORS
             const response = await fetch(fetchUrl, {
                 method: "GET",
-                redirect: "follow",
-                headers: {
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
-                }
+                redirect: "follow"
             });
             
             if (!response.ok) throw new Error("Errore HTTP");
@@ -268,7 +265,7 @@
     }
     function logout() { state.currentUser = null; state.isBoardView = false; state.showDayDetails = null; render(); }
     
-    // Aggiornata: Quando entro nella Board, sincronizzo i dati in background
+    // Quando entro nella Board, sincronizzo i dati in background
     function enterBoardView() { 
         state.isBoardView = true; 
         render(); 
@@ -278,7 +275,7 @@
     function openDayDetails(dateStr) { state.showDayDetails = dateStr; render(); }
     function closeDayDetails() { state.showDayDetails = null; render(); }
     
-    // Aggiornata: Quando cambio mese, aggiorno i dati per sicurezza
+    // Quando cambio mese, aggiorno i dati per sicurezza
     function changeMonth(offset) { 
         state.currentMonthDate = new Date(state.currentMonthDate.getFullYear(), state.currentMonthDate.getMonth() + offset, 1); 
         render(); 
