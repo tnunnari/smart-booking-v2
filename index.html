@@ -150,7 +150,6 @@
     
     function mapBookingsSafely(rawBookings) {
         return rawBookings.map((b, index) => ({
-            // Se scrivi a mano nel foglio e dimentichi l'ID, ne inventiamo uno al volo
             id: b.id || b.Id || b.ID || `manual-${Date.now()}-${index}`,
             userId: b.userId || b.userid || b.Userid || b.user_id, 
             name: b.name || b.Name || b.nome,
@@ -167,19 +166,13 @@
             const nocache = new Date().getTime();
             const response = await fetch(SCRIPT_URL + "?action=getData&t=" + nocache, {
                 method: "GET",
-                redirect: "follow",
-                headers: {
-                    "Cache-Control": "no-cache, no-store, must-revalidate",
-                    "Pragma": "no-cache",
-                    "Expires": "0"
-                }
+                redirect: "follow"
             });
             
             if (!response.ok) throw new Error("Errore HTTP");
             
             const data = await response.json();
             
-            // DEBUG PER TE: Apri la console premendo F12 per vedere cosa manda Google
             console.log("=== DATI GREZZI DA GOOGLE ===");
             console.log(data);
             
@@ -218,7 +211,6 @@
                 body: JSON.stringify({ action: actionType, booking: bookingData }),
                 redirect: "follow" 
             });
-            // Dopo aver mandato il dato al server, ricarichiamo gentilmente per confermare
             setTimeout(loadDataFromGoogleSheets, 1500);
             return true;
         } catch (e) {
