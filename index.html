@@ -23,7 +23,6 @@
             from { transform: scale(0.95); opacity: 0; }
             to { transform: scale(1); opacity: 1; }
         }
-        .spin-slow { animation: spin 1.5s linear infinite; }
     </style>
 </head>
 <body class="bg-slate-50 font-sans text-slate-800 min-h-screen flex flex-col selection:bg-indigo-200 selection:text-indigo-900">
@@ -145,39 +144,38 @@
     }
 
     // ==========================================
-    // COMUNICAZIONE COL DATABASE (ROBUSTA)
+    // COMUNICAZIONE COL DATABASE (PULITA E PURA)
     // ==========================================
     
-    function mapBookingsSafely(rawBookings) {
-        return rawBookings.map((b, index) => ({
-            id: b.id || b.Id || b.ID || `manual-${Date.now()}-${index}`,
-            userId: b.userId || b.userid || b.Userid || b.user_id, 
-            name: b.name || b.Name || b.nome,
-            floor: b.floor || b.Floor || b.piano,
-            date: parseAnyDateToYYYYMMDD(b.date || b.Date || b.data)
-        })).filter(b => b.date !== null && b.userId != null);
-    }
-
     async function loadDataFromGoogleSheets() {
         try {
             state.isLoading = true;
             render();
             
-            const nocache = new Date().getTime();
-            const response = await fetch(SCRIPT_URL + "?action=getData&t=" + nocache, {
-                method: "GET",
-                redirect: "follow"
-            });
+            // Chiamata GET pura, senza parametri extra che bloccano Google
+            const response = await fetch(SCRIPT_URL);
             
-            if (!response.ok) throw new Error("Errore HTTP");
+            if (!response.ok) throw new Error("Errore HTTP: " + response.status);
             
             const data = await response.json();
             
-            console.log("=== DATI GREZZI DA GOOGLE ===");
-            console.log(data);
+            // Log per debug (lo vedi premendo F12)
+            console.log("Dati scaricati dal Foglio:", data);
             
             USERS = data.users || [];
-            state.bookings = mapBookingsSafely(data.bookings || []);
+            
+            // Mappatura ultra-resistente agli errori di battitura nel foglio Excel
+            const rawBookings = data.bookings || [];
+            state.bookings = rawBookings.map((b, index) => {
+                let parsedDate = parseAnyDateToYYYYMMDD(b.date || b.Date || b.data);
+                return {
+                    id: b.id || b.Id || b.ID || `manual-${index}`,
+                    userId: String(b.userId || b.userid || b.Userid || ''), // Forza in stringa
+                    name: String(b.name || b.Name || b.nome || ''),
+                    floor: String(b.floor || b.Floor || b.piano || ''),
+                    date: parsedDate
+                };
+            }).filter(b => b.date !== null && b.userId !== '' && b.userId !== 'undefined');
             
             calculateDynamicFloors();
             state.isLoading = false;
@@ -185,7 +183,7 @@
             
         } catch (error) {
             console.error("Errore Fetch:", error);
-            showNotification("Errore di connessione al Database. Riprova.", "error");
+            showNotification("Errore di connessione al Database. Prova a ricaricare la pagina.", "error");
             state.isLoading = false;
             render();
         }
@@ -204,19 +202,16 @@
         });
     }
 
-    async function syncBookingWithGoogle(bookingData, actionType) {
-        try {
-            await fetch(SCRIPT_URL, {
-                method: "POST",
-                body: JSON.stringify({ action: actionType, booking: bookingData }),
-                redirect: "follow" 
-            });
-            setTimeout(loadDataFromGoogleSheets, 1500);
-            return true;
-        } catch (e) {
-            showNotification("Il salvataggio in cloud ha subito un ritardo.", "error");
-            return false;
-        }
+    function syncBookingWithGoogle(bookingData, actionType) {
+        // Invio silenzioso a Google Sheets (senza bloccare la UI o attendere)
+        fetch(SCRIPT_URL, {
+            method: "POST",
+            body: JSON.stringify({ action: actionType, booking: bookingData }),
+            redirect: "follow" 
+        }).catch(e => {
+            console.error("Errore salvataggio in background:", e);
+            showNotification("Avviso: La connessione è lenta, il dato verrà sincronizzato a breve.", "error");
+        });
     }
 
     // ==========================================
@@ -277,7 +272,7 @@
         render(); 
     }
 
-    async function toggleBooking() {
+    function toggleBooking() {
         const selectedDateStr = toYYYYMMDD(state.selectedDate);
         const dayOfWeek = state.selectedDate.getDay();
         const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
@@ -290,9 +285,9 @@
         
         if (existingIndex > -1) {
             const bToRemove = state.bookings[existingIndex];
-            state.bookings.splice(existingIndex, 1);
+            state.bookings.splice(existingIndex, 1); // Rimuove dalla grafica istantaneamente
             showNotification("Annullamento registrato.", "success");
-            await syncBookingWithGoogle(bToRemove, "remove");
+            syncBookingWithGoogle(bToRemove, "remove"); // Invia al server in background
             render();
             return;
         }
@@ -321,9 +316,9 @@
             showNotification(`Capacità per il piano ${state.currentUser.floor} esaurita in questa data.`, "error"); return; 
         }
         const newB = { id: Date.now(), userId: state.currentUser.id, name: state.currentUser.name, date: selectedDateStr, floor: state.currentUser.floor };
-        state.bookings.push(newB);
+        state.bookings.push(newB); // Aggiunge alla grafica istantaneamente
         showNotification("Prenotazione confermata!", "success");
-        await syncBookingWithGoogle(newB, "add");
+        syncBookingWithGoogle(newB, "add"); // Invia al server in background
         render();
     }
 
@@ -408,9 +403,6 @@
                                 <h1 class="text-xl font-black text-slate-900 leading-tight">Smart Booking</h1>
                                 <p class="text-sm text-slate-500 font-medium">Gestione Presenze Studio</p>
                             </div>
-                            <button onclick="loadDataFromGoogleSheets()" class="p-2 hover:bg-slate-100 rounded-lg transition-colors text-slate-400 hover:text-indigo-600" title="Ricarica Dati dal Database">
-                                <i data-lucide="refresh-cw" class="w-5 h-5 ${state.isLoading ? 'spin-slow text-indigo-500' : ''}"></i>
-                            </button>
                         </div>
                         ${content}
                     </div>
@@ -479,9 +471,6 @@
                         <h1 class="font-black text-xl tracking-tight text-slate-800 hidden sm:block">Smart Booking</h1>
                     </div>
                     <div class="flex items-center gap-3 sm:gap-5">
-                        <button onclick="loadDataFromGoogleSheets()" class="p-2 bg-slate-50 border border-slate-200 hover:bg-white hover:border-indigo-300 hover:text-indigo-600 rounded-xl transition-all text-slate-500 shadow-sm" title="Sincronizza Database">
-                            <i data-lucide="refresh-cw" class="w-4 h-4 sm:w-5 sm:h-5 ${state.isLoading ? 'spin-slow text-indigo-500' : ''}"></i>
-                        </button>
                         <button onclick="enterBoardView()" class="hidden md:flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors">
                             <i data-lucide="calendar" class="w-4 h-4"></i> Calendario Generale
                         </button>
@@ -718,10 +707,6 @@
                         <h1 class="font-black text-lg sm:text-xl tracking-tight">Calendario Generale</h1>
                     </div>
                     <div class="flex items-center gap-3">
-                        <button onclick="loadDataFromGoogleSheets()" class="p-2 sm:px-4 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-all text-white shadow-sm flex items-center gap-2" title="Sincronizza Database">
-                            <i data-lucide="refresh-cw" class="w-4 h-4 ${state.isLoading ? 'spin-slow text-indigo-400' : ''}"></i>
-                            <span class="hidden sm:inline text-sm font-bold">Aggiorna</span>
-                        </button>
                         <button onclick="exitBoardView()" class="bg-slate-800 hover:bg-slate-700 text-sm font-bold py-2.5 px-3 sm:px-5 rounded-xl border border-slate-700 transition-all flex items-center gap-2">
                             <i data-lucide="arrow-left" class="w-4 h-4"></i> <span class="hidden sm:inline">Torna Indietro</span>
                         </button>
