@@ -38,7 +38,6 @@
     // --- VARIABILI DI STATO ---
     let USERS = [];
     let FLOORS = {};
-    let CLOSED_DAYS = {}; 
     const MAX_DAYS_PER_MONTH = 6;
     const MAX_FRIDAYS_PER_MONTH = 2;
     const today = new Date();
@@ -56,7 +55,7 @@
     };
 
     // ==========================================
-    // UTILITY: MOTORE DATE ANTIPROIETTILE
+    // UTILITY: MOTORE DATE E FESTIVITÀ
     // ==========================================
     
     function toYYYYMMDD(dateObj) {
@@ -67,25 +66,20 @@
         return `${year}-${month}-${day}`;
     }
 
-    // Questa funzione ora legge Qualsiasi formato Excel (GG/MM/AAAA, YYYY-MM-DD, formati lunghi)
     function parseAnyDateToYYYYMMDD(dateInput) {
         if (!dateInput) return null;
         let d = String(dateInput).trim();
-        
-        // Rimuove la parte dell'orario se presente (es. 2024-12-25T23:00:00.000Z)
         if (d.includes('T')) d = d.split('T')[0]; 
         
-        // Cerca formato Italiano: DD/MM/YYYY o DD-MM-YYYY
         let match = d.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
         if (match) {
             let day = match[1].padStart(2, '0');
             let month = match[2].padStart(2, '0');
             let year = match[3];
-            if (year.length === 2) year = "20" + year; // Se scrivono "24" diventa "2024"
+            if (year.length === 2) year = "20" + year; 
             return `${year}-${month}-${day}`;
         }
         
-        // Cerca formato Internazionale: YYYY-MM-DD o YYYY/MM/DD
         match = d.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
         if (match) {
             let year = match[1];
@@ -94,13 +88,9 @@
             return `${year}-${month}-${day}`;
         }
         
-        // Fallback: prova a usare il motore interno di Javascript
         let parsed = new Date(d);
-        if (!isNaN(parsed.getTime())) {
-            return toYYYYMMDD(parsed);
-        }
-        
-        return null; // Data non valida
+        if (!isNaN(parsed.getTime())) return toYYYYMMDD(parsed);
+        return null;
     }
 
     function formatDisplayDate(dateStr) {
@@ -108,6 +98,62 @@
         const parts = dateStr.split('-');
         const dateObj = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
         return dateObj.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    }
+
+    // Algoritmo per calcolare la Pasqua (e di conseguenza Pasquetta)
+    function getEaster(year) {
+        let f = Math.floor, G = year % 19, C = f(year / 100),
+            H = (C - f(C / 4) - f((8 * C + 13) / 25) + 19 * G + 15) % 30,
+            I = H - f(H / 28) * (1 - f(29 / (H + 1)) * f((21 - G) / 11)),
+            J = (year + f(year / 4) + I + 2 - C + f(C / 4)) % 7,
+            L = I - J, month = 3 + f((L + 40) / 44), day = L + 28 - 31 * f(month / 4);
+        return new Date(year, month - 1, day);
+    }
+
+    // MOTORE CHIUSURE HARDCODED (Sostituisce il foglio Google "Chiusure")
+    function getClosureReason(dateObj) {
+        const day = dateObj.getDate();
+        const month = dateObj.getMonth(); // 0-indexed (Gennaio = 0, Dicembre = 11)
+        const year = dateObj.getFullYear();
+        const dayOfWeek = dateObj.getDay();
+
+        // 1. Chiusura Natalizia Estesa (24 Dic - 6 Gen)
+        if ((month === 11 && day >= 24) || (month === 0 && day <= 6)) {
+            if (month === 11 && day === 25) return "Natale";
+            if (month === 11 && day === 26) return "Santo Stefano";
+            if (month === 0 && day === 1) return "Capodanno";
+            if (month === 0 && day === 6) return "Epifania";
+            return "Chiusura Natalizia Studio";
+        }
+
+        // 2. Festività Nazionali Fisse
+        if (month === 3 && day === 25) return "Festa della Liberazione";
+        if (month === 4 && day === 1) return "Festa dei Lavoratori";
+        if (month === 5 && day === 2) return "Festa della Repubblica";
+        if (month === 7 && day === 15) return "Ferragosto";
+        if (month === 10 && day === 1) return "Tutti i Santi";
+        if (month === 11 && day === 8) return "Immacolata Concezione";
+
+        // 3. Pasquetta (Lunedì dell'Angelo)
+        const easter = getEaster(year);
+        const pasquetta = new Date(easter);
+        pasquetta.setDate(pasquetta.getDate() + 1);
+        if (month === pasquetta.getMonth() && day === pasquetta.getDate()) {
+            return "Lunedì di Pasquetta";
+        }
+
+        // 4. Regole Estive (Luglio e Agosto)
+        // Venerdì di Luglio (6) e Agosto (7)
+        if ((month === 6 || month === 7) && dayOfWeek === 5) {
+            return "Chiusura Venerdì Estivo";
+        }
+        // Due settimane centrali di Agosto (dal 10 al 24 compresi)
+        if (month === 7 && day >= 10 && day <= 24) {
+            return "Chiusura Estiva Studio";
+        }
+
+        // Se non rientra in nessuna di queste casistiche, lo studio è aperto
+        return null;
     }
 
     // ==========================================
@@ -132,15 +178,6 @@
                 ...b,
                 date: parseAnyDateToYYYYMMDD(b.date)
             })).filter(b => b.date !== null);
-
-            // Popola le chiusure usando il nuovo motore date
-            CLOSED_DAYS = {};
-            if (data.closures && typeof data.closures === 'object') {
-                Object.keys(data.closures).forEach(k => {
-                    const normD = parseAnyDateToYYYYMMDD(k);
-                    if (normD) CLOSED_DAYS[normD] = data.closures[k];
-                });
-            }
             
             calculateDynamicFloors();
             state.isLoading = false;
@@ -237,10 +274,11 @@
         const selectedDateStr = toYYYYMMDD(state.selectedDate);
         const dayOfWeek = state.selectedDate.getDay();
         const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
+        const chiusuraMotivo = getClosureReason(state.selectedDate);
         
+        // Priorità alle chiusure hardcoded
+        if (chiusuraMotivo) { showNotification(`Studio chiuso: ${chiusuraMotivo}`, "error"); return; }
         if (isWeekend) { showNotification("Non puoi prenotare durante il weekend.", "error"); return; }
-        const chiusuraMotivo = CLOSED_DAYS[selectedDateStr];
-        if (chiusuraMotivo) { showNotification(`Studio chiuso in questa data: ${chiusuraMotivo}`, "error"); return; }
         
         const existingIndex = state.bookings.findIndex(b => String(b.userId) === String(state.currentUser.id) && b.date === selectedDateStr);
         
@@ -382,14 +420,15 @@
         
         const dayOfWeek = state.selectedDate.getDay();
         const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
-        const chiusuraMotivo = CLOSED_DAYS[dateStr];
+        const chiusuraMotivo = getClosureReason(state.selectedDate);
         
         let btnContent = "";
         
-        if (isWeekend) {
+        // Priorità di visualizzazione: Prima la chiusura, poi il weekend
+        if (chiusuraMotivo) {
+            btnContent = `<div class="text-center p-5 bg-red-100 rounded-2xl text-red-800 font-black border border-red-300 uppercase tracking-widest flex flex-col items-center justify-center gap-1 shadow-inner"><i data-lucide="calendar-x-2" class="w-6 h-6 mb-1 text-red-600"></i> CHIUSO<span class="text-xs opacity-80 normal-case">${chiusuraMotivo}</span></div>`;
+        } else if (isWeekend) {
             btnContent = `<div class="text-center p-5 bg-red-50 rounded-2xl text-red-600 font-black border border-red-200 uppercase tracking-widest flex items-center justify-center gap-2"><i data-lucide="coffee" class="w-5 h-5"></i> WEEKEND - NON LAVORATIVO</div>`;
-        } else if (chiusuraMotivo) {
-            btnContent = `<div class="text-center p-5 bg-red-100 rounded-2xl text-red-800 font-black border border-red-300 uppercase tracking-widest flex flex-col items-center justify-center gap-1 shadow-inner"><i data-lucide="calendar-x-2" class="w-6 h-6 mb-1 text-red-600"></i> STUDIO CHIUSO<span class="text-xs opacity-80 normal-case">${chiusuraMotivo}</span></div>`;
         } else {
             btnContent = `<button onclick="toggleBooking()" class="w-full py-5 px-4 rounded-2xl font-black text-white shadow-xl transition-all transform active:scale-95 flex items-center justify-center gap-3 ${hasBooked ? 'bg-red-500 hover:bg-red-600 shadow-red-200/50' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200/50'}">
                 <i data-lucide="${hasBooked ? 'x' : 'check'}" class="w-6 h-6"></i>
@@ -559,7 +598,7 @@
             const floorB = state.bookings.filter(b => b.date === dStr && b.floor === state.currentUser.floor);
             const mSw = FLOORS[state.currentUser.floor]?.maxSw || 1;
             const myB = state.bookings.find(b => String(b.userId) === String(state.currentUser.id) && b.date === dStr);
-            const chiusuraMotivo = CLOSED_DAYS[dStr];
+            const chiusuraMotivo = getClosureReason(dObj);
             
             let p = Math.round((floorB.length / mSw) * 100); 
             if (p > 100) p = 100;
@@ -575,19 +614,19 @@
                 cCl += ` border-slate-100 hover:border-indigo-300 hover:shadow-md bg-white`;
             }
 
-            // MODIFICA: Colori Rossi per Weekend e Chiusure
-            if (isWeekend) {
-                cCl = cCl.replace('bg-white', 'bg-red-50 opacity-80');
-                if(!isSel) cCl = cCl.replace('border-slate-100', 'border-red-200 border-dashed');
-                numColor = "text-red-500";
-            } 
-            else if (chiusuraMotivo) { 
+            // MODIFICA: Controllo combinato Festività / Weekend
+            if (chiusuraMotivo) { 
                 cCl = cCl.replace('bg-white', 'bg-red-100');
                 if(!isSel) cCl = cCl.replace('border-slate-100', 'border-red-300');
                 numColor = "text-red-800";
                 bH = `<div class="hidden sm:block text-[9px] font-black bg-red-600 text-white rounded-md py-1 px-1 text-center uppercase truncate mt-auto shadow-sm">${chiusuraMotivo}</div>
                       <div class="sm:hidden mt-auto mx-auto w-2 h-2 rounded-full bg-red-600"></div>`; 
             }
+            else if (isWeekend) {
+                cCl = cCl.replace('bg-white', 'bg-red-50 opacity-80');
+                if(!isSel) cCl = cCl.replace('border-slate-100', 'border-red-200 border-dashed');
+                numColor = "text-red-500";
+            } 
             else if (myB) { 
                 cCl = cCl.replace('bg-white', 'bg-indigo-600');
                 if(!isSel) cCl = cCl.replace('border-slate-100', 'border-indigo-700');
@@ -731,20 +770,19 @@
             const dayB = state.bookings.filter(b => b.date === dateStr);
             const perc = totalCap > 0 ? Math.round((dayB.length / totalCap) * 100) : 0;
             const colors = getCapacityColorLevels(perc);
-            const chiusuraMotivo = CLOSED_DAYS[dateStr];
+            const chiusuraMotivo = getClosureReason(dObj);
             
             let cellCl = `board-day-cell h-36 p-3 rounded-2xl border-2 flex flex-col relative transition-all `;
             let inner = '';
 
-            // MODIFICA: Colori Rossi per la Board
-            if (isWeekend) {
-                cellCl += " bg-red-50 border-red-100 opacity-70 pointer-events-none";
-                inner = `<div class="mt-auto text-[10px] font-black text-red-400 text-center uppercase mb-2">Weekend</div>`;
-            } 
-            else if (chiusuraMotivo) { 
+            if (chiusuraMotivo) { 
                 cellCl += " bg-red-100 border-red-300 pointer-events-none"; 
                 inner = `<div class="mt-auto text-[10px] font-black bg-red-600 text-white rounded-lg py-2 px-1 text-center uppercase leading-tight shadow-sm">${chiusuraMotivo}</div>`; 
             }
+            else if (isWeekend) {
+                cellCl += " bg-red-50 border-red-100 opacity-70 pointer-events-none";
+                inner = `<div class="mt-auto text-[10px] font-black text-red-400 text-center uppercase mb-2">Weekend</div>`;
+            } 
             else { 
                 cellCl += ` bg-white border-slate-100 hover:border-indigo-300 hover:shadow-xl hover:scale-[1.02] cursor-pointer z-10`; 
                 inner = `
