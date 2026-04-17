@@ -445,16 +445,21 @@
         let floorStats = Object.keys(FLOORS).map(f => {
             const booked = state.bookings.filter(b => b.date === dateStr && b.floor === f).length;
             const max = FLOORS[f].maxSw;
-            const p = Math.min(Math.round((booked / max) * 100), 100);
-            const colors = getCapacityColorLevels(p);
+            const total = FLOORS[f].total;
+            
+            const absPerc = total > 0 ? Math.round((booked / total) * 100) : 0;
+            const maxPerc = total > 0 ? Math.round((max / total) * 100) : 0;
+            const relPerc = Math.min(Math.round((booked / max) * 100), 100);
+            
+            const colors = getCapacityColorLevels(relPerc);
             return `
                 <div class="mb-4 last:mb-0">
                     <div class="flex justify-between items-end mb-2">
                         <span class="text-xs font-black uppercase tracking-wider text-slate-500">${f}</span>
-                        <span class="text-sm font-black text-slate-800">${booked}/${max} <span class="text-slate-400 font-medium">(${p}%)</span></span>
+                        <span class="text-sm font-black text-slate-800">${absPerc}% <span class="text-slate-400 font-medium">(${booked}/${total} - Limite: ${maxPerc}%)</span></span>
                     </div>
                     <div class="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                        <div class="h-full ${colors.bar} transition-all duration-1000 ease-out" style="width: ${p}%"></div>
+                        <div class="h-full ${colors.bar} transition-all duration-1000 ease-out" style="width: ${relPerc}%"></div>
                     </div>
                 </div>`;
         }).join('');
@@ -597,12 +602,15 @@
             
             const floorB = state.bookings.filter(b => b.date === dStr && b.floor === state.currentUser.floor);
             const mSw = FLOORS[state.currentUser.floor]?.maxSw || 1;
+            const totalF = FLOORS[state.currentUser.floor]?.total || 1;
             const myB = state.bookings.find(b => String(b.userId) === String(state.currentUser.id) && b.date === dStr);
             const chiusuraMotivo = getClosureReason(dObj);
             
-            let p = Math.round((floorB.length / mSw) * 100); 
-            if (p > 100) p = 100;
-            const colors = getCapacityColorLevels(p);
+            let relPerc = Math.round((floorB.length / mSw) * 100); 
+            if (relPerc > 100) relPerc = 100;
+            let absPerc = Math.round((floorB.length / totalF) * 100);
+            
+            const colors = getCapacityColorLevels(relPerc);
             
             let cCl = `day-cell aspect-square p-2 sm:p-3 rounded-2xl border-2 flex flex-col relative transition-all cursor-pointer `;
             let bH = "";
@@ -642,7 +650,7 @@
                       <div class="sm:hidden mt-auto mx-auto w-2 h-2 rounded-full bg-red-500"></div>`; 
             }
             else { 
-                bH = `<div class="hidden sm:block text-[9px] font-bold text-center ${colors.badgeText} ${colors.badgeBg} rounded-md py-1 mt-auto truncate">${p}% OCCUPATO</div>
+                bH = `<div class="hidden sm:block text-[9px] font-bold text-center ${colors.badgeText} ${colors.badgeBg} rounded-md py-1 mt-auto truncate">${absPerc}% OCCUPATO</div>
                       <div class="sm:hidden mt-auto mx-auto w-2 h-2 rounded-full ${colors.bar}"></div>`; 
             }
 
@@ -756,6 +764,7 @@
         let html = '';
         let totalCap = 0; 
         Object.keys(FLOORS).forEach(f => totalCap += FLOORS[f].maxSw);
+        const totalUsers = USERS.length; // Calcolo totale dipendenti
         
         for (let i = 0; i < firstDay; i++) {
             html += `<div class="h-36 rounded-2xl bg-slate-50/50 border border-dashed border-slate-200"></div>`;
@@ -768,8 +777,14 @@
             const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
             
             const dayB = state.bookings.filter(b => b.date === dateStr);
-            const perc = totalCap > 0 ? Math.round((dayB.length / totalCap) * 100) : 0;
-            const colors = getCapacityColorLevels(perc);
+            
+            // Due percentuali diverse: 
+            // 1. capPerc serve solo per il colore di saturazione (limite SW raggiunto)
+            // 2. popPerc calcola l'incidenza totale sullo studio (es. 2 su 39)
+            const capPerc = totalCap > 0 ? Math.round((dayB.length / totalCap) * 100) : 0;
+            const popPerc = totalUsers > 0 ? Math.round((dayB.length / totalUsers) * 100) : 0;
+            
+            const colors = getCapacityColorLevels(capPerc); 
             const chiusuraMotivo = getClosureReason(dObj);
             
             let cellCl = `board-day-cell h-36 p-3 rounded-2xl border-2 flex flex-col relative transition-all `;
@@ -794,7 +809,7 @@
                         <div class="flex -space-x-1">
                             ${dayB.length > 0 ? `<div class="w-2 h-2 rounded-full bg-indigo-500"></div>` : ''}
                         </div>
-                        <div class="text-[10px] ${colors.badgeText} font-black uppercase tracking-tight">${perc}% SAT</div>
+                        <div class="text-[10px] ${colors.badgeText} font-black uppercase tracking-tight" title="Saturazione dei limiti SW al ${capPerc}%">${dayB.length}/${totalUsers} SW (${popPerc}%)</div>
                     </div>`;
             }
             
