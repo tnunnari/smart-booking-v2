@@ -32,6 +32,7 @@
     // ==========================================
     // CONFIGURAZIONE DATABASE GOOGLE
     // ==========================================
+    // SOSTITUISCI QUESTO URL CON IL TUO URL UFFICIALE (quello che finisce con /exec)
     const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxEiZioys0Xb5ZZhR0FinxPPfqYSxo61KUYbdKz8J_FPUOypOOLHwxIfQ6QDiYYa8xUNg/exec"; 
     
     // --- VARIABILI DI STATO ---
@@ -144,7 +145,7 @@
     }
 
     // ==========================================
-    // COMUNICAZIONE COL DATABASE (PULITA E PURA)
+    // COMUNICAZIONE COL DATABASE (PERFETTA)
     // ==========================================
     
     async function loadDataFromGoogleSheets() {
@@ -152,25 +153,33 @@
             state.isLoading = true;
             render();
             
-            // Chiamata GET pura, senza parametri extra che bloccano Google
-            const response = await fetch(SCRIPT_URL);
+            // Bypass sicuro per la cache del browser. 
+            // Costringe il browser a scaricare dati freschi ad ogni F5 senza bloccare Google.
+            const nocache = new Date().getTime();
+            const url = `${SCRIPT_URL}?action=getData&t=${nocache}`;
             
-            if (!response.ok) throw new Error("Errore HTTP: " + response.status);
+            const response = await fetch(url, { redirect: "follow" });
+            
+            if (!response.ok) throw new Error("Errore di rete con Google.");
             
             const data = await response.json();
             
-            // Log per debug (lo vedi premendo F12)
-            console.log("Dati scaricati dal Foglio:", data);
+            // CONTROLLO SALVAVITA: Se il file Google ha un errore, ci avvisa e SI FERMA.
+            // Prima questo pezzo mancava, quindi il sito svuotava tutte le prenotazioni!
+            if (data.error) {
+                console.error("Errore Apps Script:", data.message);
+                throw new Error("Errore interno del Foglio Google: " + data.message);
+            }
             
             USERS = data.users || [];
             
-            // Mappatura ultra-resistente agli errori di battitura nel foglio Excel
+            // Leggiamo i dati in modo blindato. Qualsiasi formato o errore di battitura viene gestito.
             const rawBookings = data.bookings || [];
             state.bookings = rawBookings.map((b, index) => {
                 let parsedDate = parseAnyDateToYYYYMMDD(b.date || b.Date || b.data);
                 return {
                     id: b.id || b.Id || b.ID || `manual-${index}`,
-                    userId: String(b.userId || b.userid || b.Userid || ''), // Forza in stringa
+                    userId: String(b.userId || b.userid || b.Userid || ''), 
                     name: String(b.name || b.Name || b.nome || ''),
                     floor: String(b.floor || b.Floor || b.piano || ''),
                     date: parsedDate
@@ -182,8 +191,8 @@
             render();
             
         } catch (error) {
-            console.error("Errore Fetch:", error);
-            showNotification("Errore di connessione al Database. Prova a ricaricare la pagina.", "error");
+            console.error("Dettaglio Errore:", error);
+            showNotification(error.message, "error"); // Mostra il VERO errore sullo schermo!
             state.isLoading = false;
             render();
         }
@@ -203,14 +212,13 @@
     }
 
     function syncBookingWithGoogle(bookingData, actionType) {
-        // Invio silenzioso a Google Sheets (senza bloccare la UI o attendere)
+        // Salvataggio silente. L'utente vede la prenotazione subito, il server la salva dietro le quinte.
         fetch(SCRIPT_URL, {
             method: "POST",
             body: JSON.stringify({ action: actionType, booking: bookingData }),
             redirect: "follow" 
         }).catch(e => {
-            console.error("Errore salvataggio in background:", e);
-            showNotification("Avviso: La connessione è lenta, il dato verrà sincronizzato a breve.", "error");
+            showNotification("Errore di connessione. Riprova più tardi.", "error");
         });
     }
 
@@ -234,7 +242,7 @@
             toast.style.transform = 'translate(-50%, -20px)';
             toast.style.transition = 'all 0.3s ease';
             setTimeout(() => toast.remove(), 300);
-        }, 3500);
+        }, 5000); // Aumentato a 5 secondi per far leggere bene gli eventuali errori
     }
 
     function getCapacityColorLevels(percentage) {
@@ -254,13 +262,7 @@
         } else { showNotification("Password errata. Riprova.", "error"); }
     }
     
-    function logout() { 
-        state.currentUser = null; 
-        state.isBoardView = false; 
-        state.showDayDetails = null; 
-        render(); 
-    }
-    
+    function logout() { state.currentUser = null; state.isBoardView = false; state.showDayDetails = null; render(); }
     function enterBoardView() { state.isBoardView = true; render(); }
     function exitBoardView() { state.isBoardView = false; state.showDayDetails = null; render(); }
     function openDayDetails(dateStr) { state.showDayDetails = dateStr; render(); }
@@ -285,9 +287,9 @@
         
         if (existingIndex > -1) {
             const bToRemove = state.bookings[existingIndex];
-            state.bookings.splice(existingIndex, 1); // Rimuove dalla grafica istantaneamente
+            state.bookings.splice(existingIndex, 1); // Rimuove dalla grafica
             showNotification("Annullamento registrato.", "success");
-            syncBookingWithGoogle(bToRemove, "remove"); // Invia al server in background
+            syncBookingWithGoogle(bToRemove, "remove"); // Invia al server
             render();
             return;
         }
@@ -316,9 +318,9 @@
             showNotification(`Capacità per il piano ${state.currentUser.floor} esaurita in questa data.`, "error"); return; 
         }
         const newB = { id: Date.now(), userId: state.currentUser.id, name: state.currentUser.name, date: selectedDateStr, floor: state.currentUser.floor };
-        state.bookings.push(newB); // Aggiunge alla grafica istantaneamente
+        state.bookings.push(newB); // Aggiunge alla grafica
         showNotification("Prenotazione confermata!", "success");
-        syncBookingWithGoogle(newB, "add"); // Invia al server in background
+        syncBookingWithGoogle(newB, "add"); // Invia al server
         render();
     }
 
@@ -332,7 +334,7 @@
             <div class="flex-1 flex flex-col items-center justify-center p-4 bg-slate-900">
                 <i data-lucide="loader-2" class="w-16 h-16 text-indigo-500 animate-spin mb-6"></i>
                 <h1 class="text-white text-2xl font-black tracking-tight mb-2">Connessione al Server...</h1>
-                <p class="text-slate-400 font-medium">Sincronizzazione database in corso</p>
+                <p class="text-slate-400 font-medium">Lettura Database in corso</p>
             </div>`; 
         }
         else if (state.isBoardView) { app.innerHTML = renderBoardScreen(); attachBoardListeners(); }
