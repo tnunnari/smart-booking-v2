@@ -151,7 +151,7 @@
     }
 
     // ==========================================
-    // COMUNICAZIONE COL DATABASE (AGGIORNATA PER CORS SICURO)
+    // COMUNICAZIONE COL DATABASE (SUPER FIX)
     // ==========================================
 
     async function loadDataFromGoogleSheets(silent = false) {
@@ -159,15 +159,13 @@
             if (!silent) { state.isLoading = true; render(); }
             else { state.isSyncing = true; render(); }
 
-            // TRUCCO ANTI-CACHE: Aggiungiamo un timestamp casuale all'URL
-            // Così il telefono è costretto a chiedere i dati freschi a Google
             const cacheBuster = new Date().getTime();
             const fetchUrl = `${SCRIPT_URL}?action=getData&t=${cacheBuster}`;
 
-            // Eseguiamo la fetch senza headers custom, altrimenti Google blocca con errore CORS
             const response = await fetch(fetchUrl, {
                 method: "GET",
-                redirect: "follow"
+                redirect: "follow",
+                cache: 'no-store' // Obbliga a non usare mai la memoria del browser
             });
             
             if (!response.ok) throw new Error("Errore HTTP");
@@ -175,16 +173,34 @@
             const data = await response.json();
             USERS = data.users || [];
             
-            state.bookings = (data.bookings || []).map(b => ({
-                ...b,
-                date: parseAnyDateToYYYYMMDD(b.date)
-            })).filter(b => b.date !== null);
+            // --- SCUDO ANTI-DUPLICATI E FIX "DATA/DATE" ---
+            const uniqueBookings = [];
+            const seen = new Set();
+            
+            (data.bookings || []).forEach(b => {
+                // Legge la colonna sia se si chiama "date", "data" o "Data"
+                const rawDate = b.date || b.data || b.Data; 
+                const parsedDate = parseAnyDateToYYYYMMDD(rawDate);
+                
+                if (parsedDate) {
+                    // Crea una chiave univoca: IDUtente_Data (es. 32_2026-04-28)
+                    const key = `${b.userId}_${parsedDate}`;
+                    // Se questa combinazione non l'abbiamo ancora vista, la aggiungiamo
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        uniqueBookings.push({ ...b, date: parsedDate });
+                    }
+                }
+            });
+            
+            state.bookings = uniqueBookings;
+            // --- FINE FIX ---
             
             calculateDynamicFloors();
             
             if (!silent) state.isLoading = false;
             state.isSyncing = false;
-            render(); // Ricarica lo schermo con i nuovi dati
+            render(); 
         } catch (error) {
             console.error("Errore Fetch:", error);
             showNotification("Errore di connessione. Riprova.", "error");
@@ -265,7 +281,6 @@
     }
     function logout() { state.currentUser = null; state.isBoardView = false; state.showDayDetails = null; render(); }
     
-    // Quando entro nella Board, sincronizzo i dati in background
     function enterBoardView() { 
         state.isBoardView = true; 
         render(); 
@@ -275,7 +290,6 @@
     function openDayDetails(dateStr) { state.showDayDetails = dateStr; render(); }
     function closeDayDetails() { state.showDayDetails = null; render(); }
     
-    // Quando cambio mese, aggiorno i dati per sicurezza
     function changeMonth(offset) { 
         state.currentMonthDate = new Date(state.currentMonthDate.getFullYear(), state.currentMonthDate.getMonth() + offset, 1); 
         render(); 
@@ -287,7 +301,6 @@
         render(); 
     }
     
-    // Funzione richiamabile manualmente dall'utente
     function forceSync() {
         if(!state.isSyncing) loadDataFromGoogleSheets(true);
     }
