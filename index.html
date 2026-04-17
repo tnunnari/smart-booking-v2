@@ -23,6 +23,8 @@
             from { transform: scale(0.95); opacity: 0; }
             to { transform: scale(1); opacity: 1; }
         }
+        .spin-anim { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body class="bg-slate-50 font-sans text-slate-800 min-h-screen flex flex-col selection:bg-indigo-200 selection:text-indigo-900">
@@ -51,7 +53,8 @@
         currentMonthDate: new Date(today.getFullYear(), today.getMonth(), 1),
         selectedDate: today,
         bookings: [],
-        isLoading: false
+        isLoading: false,
+        isSyncing: false
     };
 
     // ==========================================
@@ -100,7 +103,6 @@
         return dateObj.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     }
 
-    // Algoritmo per calcolare la Pasqua (e di conseguenza Pasquetta)
     function getEaster(year) {
         let f = Math.floor, G = year % 19, C = f(year / 100),
             H = (C - f(C / 4) - f((8 * C + 13) / 25) + 19 * G + 15) % 30,
@@ -110,14 +112,12 @@
         return new Date(year, month - 1, day);
     }
 
-    // MOTORE CHIUSURE HARDCODED (Sostituisce il foglio Google "Chiusure")
     function getClosureReason(dateObj) {
         const day = dateObj.getDate();
-        const month = dateObj.getMonth(); // 0-indexed (Gennaio = 0, Dicembre = 11)
+        const month = dateObj.getMonth();
         const year = dateObj.getFullYear();
         const dayOfWeek = dateObj.getDay();
 
-        // 1. Chiusura Natalizia Estesa (24 Dic - 6 Gen)
         if ((month === 11 && day >= 24) || (month === 0 && day <= 6)) {
             if (month === 11 && day === 25) return "Natale";
             if (month === 11 && day === 26) return "Santo Stefano";
@@ -126,7 +126,6 @@
             return "Chiusura Natalizia Studio";
         }
 
-        // 2. Festività Nazionali Fisse
         if (month === 3 && day === 25) return "Festa della Liberazione";
         if (month === 4 && day === 1) return "Festa dei Lavoratori";
         if (month === 5 && day === 2) return "Festa della Repubblica";
@@ -134,7 +133,6 @@
         if (month === 10 && day === 1) return "Tutti i Santi";
         if (month === 11 && day === 8) return "Immacolata Concezione";
 
-        // 3. Pasquetta (Lunedì dell'Angelo)
         const easter = getEaster(year);
         const pasquetta = new Date(easter);
         pasquetta.setDate(pasquetta.getDate() + 1);
@@ -142,31 +140,37 @@
             return "Lunedì di Pasquetta";
         }
 
-        // 4. Regole Estive (Luglio e Agosto)
-        // Venerdì di Luglio (6) e Agosto (7)
         if ((month === 6 || month === 7) && dayOfWeek === 5) {
             return "Chiusura Venerdì Estivo";
         }
-        // Due settimane centrali di Agosto (dal 10 al 24 compresi)
         if (month === 7 && day >= 10 && day <= 24) {
             return "Chiusura Estiva Studio";
         }
 
-        // Se non rientra in nessuna di queste casistiche, lo studio è aperto
         return null;
     }
 
     // ==========================================
-    // COMUNICAZIONE COL DATABASE
+    // COMUNICAZIONE COL DATABASE (AGGIORNATA)
     // ==========================================
 
-    async function loadDataFromGoogleSheets() {
+    async function loadDataFromGoogleSheets(silent = false) {
         try {
-            state.isLoading = true;
-            render();
-            const response = await fetch(SCRIPT_URL + "?action=getData", {
+            if (!silent) { state.isLoading = true; render(); }
+            else { state.isSyncing = true; render(); }
+
+            // TRUCCO ANTI-CACHE: Aggiungiamo un timestamp casuale all'URL
+            // Così il telefono è costretto a chiedere i dati freschi a Google
+            const cacheBuster = new Date().getTime();
+            const fetchUrl = `${SCRIPT_URL}?action=getData&t=${cacheBuster}`;
+
+            const response = await fetch(fetchUrl, {
                 method: "GET",
-                redirect: "follow"
+                redirect: "follow",
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
             });
             
             if (!response.ok) throw new Error("Errore HTTP");
@@ -180,12 +184,15 @@
             })).filter(b => b.date !== null);
             
             calculateDynamicFloors();
-            state.isLoading = false;
-            render();
+            
+            if (!silent) state.isLoading = false;
+            state.isSyncing = false;
+            render(); // Ricarica lo schermo con i nuovi dati
         } catch (error) {
             console.error("Errore Fetch:", error);
-            showNotification("Errore di connessione al Database.", "error");
+            showNotification("Errore di connessione. Riprova.", "error");
             state.isLoading = false;
+            state.isSyncing = false;
             render();
         }
     }
@@ -212,7 +219,7 @@
             });
             return true;
         } catch (e) {
-            showNotification("Il salvataggio in cloud ha subito un ritardo, ricarica la pagina.", "error");
+            showNotification("Ritardo di connessione, ricarica la pagina.", "error");
             return false;
         }
     }
@@ -256,18 +263,36 @@
         const pwdInput = document.getElementById('password-input').value;
         if (String(pwdInput) === String(state.loginUser.password)) {
             state.currentUser = state.loginUser; state.loginStep = 1; render();
+            loadDataFromGoogleSheets(true); // Sync silente al login
         } else { showNotification("Password errata. Riprova.", "error"); }
     }
     function logout() { state.currentUser = null; state.isBoardView = false; state.showDayDetails = null; render(); }
-    function enterBoardView() { state.isBoardView = true; render(); }
+    
+    // Aggiornata: Quando entro nella Board, sincronizzo i dati in background
+    function enterBoardView() { 
+        state.isBoardView = true; 
+        render(); 
+        loadDataFromGoogleSheets(true); 
+    }
     function exitBoardView() { state.isBoardView = false; state.showDayDetails = null; render(); }
     function openDayDetails(dateStr) { state.showDayDetails = dateStr; render(); }
     function closeDayDetails() { state.showDayDetails = null; render(); }
-    function changeMonth(offset) { state.currentMonthDate = new Date(state.currentMonthDate.getFullYear(), state.currentMonthDate.getMonth() + offset, 1); render(); }
+    
+    // Aggiornata: Quando cambio mese, aggiorno i dati per sicurezza
+    function changeMonth(offset) { 
+        state.currentMonthDate = new Date(state.currentMonthDate.getFullYear(), state.currentMonthDate.getMonth() + offset, 1); 
+        render(); 
+        loadDataFromGoogleSheets(true);
+    }
     function selectDate(dateStr) { 
         const parts = dateStr.split('-'); 
         state.selectedDate = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0); 
         render(); 
+    }
+    
+    // Funzione richiamabile manualmente dall'utente
+    function forceSync() {
+        if(!state.isSyncing) loadDataFromGoogleSheets(true);
     }
 
     async function toggleBooking() {
@@ -276,7 +301,6 @@
         const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
         const chiusuraMotivo = getClosureReason(state.selectedDate);
         
-        // Priorità alle chiusure hardcoded
         if (chiusuraMotivo) { showNotification(`Studio chiuso: ${chiusuraMotivo}`, "error"); return; }
         if (isWeekend) { showNotification("Non puoi prenotare durante il weekend.", "error"); return; }
         
@@ -424,7 +448,6 @@
         
         let btnContent = "";
         
-        // Priorità di visualizzazione: Prima la chiusura, poi il weekend
         if (chiusuraMotivo) {
             btnContent = `<div class="text-center p-5 bg-red-100 rounded-2xl text-red-800 font-black border border-red-300 uppercase tracking-widest flex flex-col items-center justify-center gap-1 shadow-inner"><i data-lucide="calendar-x-2" class="w-6 h-6 mb-1 text-red-600"></i> CHIUSO<span class="text-xs opacity-80 normal-case">${chiusuraMotivo}</span></div>`;
         } else if (isWeekend) {
@@ -473,12 +496,16 @@
                         </div>
                         <h1 class="font-black text-xl tracking-tight text-slate-800 hidden sm:block">Smart Booking</h1>
                     </div>
-                    <div class="flex items-center gap-5">
-                        <button onclick="enterBoardView()" class="hidden md:flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors">
-                            <i data-lucide="calendar" class="w-4 h-4"></i> Calendario Generale
+                    <div class="flex items-center gap-4">
+                        <button onclick="forceSync()" class="flex items-center gap-2 p-2 text-sm font-bold text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all" title="Aggiorna dati">
+                            <i data-lucide="refresh-cw" class="w-5 h-5 ${state.isSyncing ? 'spin-anim' : ''}"></i>
+                            <span class="hidden md:inline">Sincronizza</span>
                         </button>
-                        <div class="h-8 w-px bg-slate-200 hidden md:block"></div>
-                        <div class="flex items-center gap-3">
+                        <div class="h-8 w-px bg-slate-200 hidden md:block mx-1"></div>
+                        <button onclick="enterBoardView()" class="hidden md:flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-indigo-600 transition-colors">
+                            <i data-lucide="calendar" class="w-4 h-4"></i> Calendario
+                        </button>
+                        <div class="flex items-center gap-3 ml-2">
                             <div class="text-right hidden sm:block">
                                 <p class="text-sm font-black text-slate-800 leading-tight">${state.currentUser.name}</p>
                                 <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">${state.currentUser.floor}</p>
@@ -546,8 +573,9 @@
 
                 <div class="xl:col-span-8 bg-white rounded-3xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
                     <div class="p-6 sm:p-8 border-b flex items-center justify-between bg-white">
-                        <h2 class="text-2xl font-black capitalize text-slate-800 tracking-tight">
+                        <h2 class="text-2xl font-black capitalize text-slate-800 tracking-tight flex items-center gap-2">
                             ${state.currentMonthDate.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })}
+                            ${state.isSyncing ? '<i data-lucide="refresh-cw" class="w-5 h-5 text-indigo-400 spin-anim ml-2"></i>' : ''}
                         </h2>
                         <div class="flex gap-2">
                             <button onclick="changeMonth(-1)" class="p-2 sm:p-3 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 hover:text-indigo-600 transition-all active:scale-90">
@@ -622,7 +650,6 @@
                 cCl += ` border-slate-100 hover:border-indigo-300 hover:shadow-md bg-white`;
             }
 
-            // MODIFICA: Controllo combinato Festività / Weekend
             if (chiusuraMotivo) { 
                 cCl = cCl.replace('bg-white', 'bg-red-100');
                 if(!isSel) cCl = cCl.replace('border-slate-100', 'border-red-300');
@@ -717,17 +744,23 @@
                         </div>
                         <h1 class="font-black text-lg sm:text-xl tracking-tight">Calendario Generale</h1>
                     </div>
-                    <button onclick="exitBoardView()" class="bg-slate-800 hover:bg-slate-700 text-sm font-bold py-2.5 px-5 rounded-xl border border-slate-700 transition-all flex items-center gap-2">
-                        <i data-lucide="arrow-left" class="w-4 h-4"></i> <span class="hidden sm:inline">Torna Indietro</span>
-                    </button>
+                    <div class="flex items-center gap-4">
+                        <button onclick="forceSync()" class="flex items-center gap-2 p-2 hover:bg-slate-800 rounded-xl transition-colors text-indigo-400" title="Sincronizza Dati">
+                            <i data-lucide="refresh-cw" class="w-5 h-5 ${state.isSyncing ? 'spin-anim' : ''}"></i>
+                        </button>
+                        <button onclick="exitBoardView()" class="bg-slate-800 hover:bg-slate-700 text-sm font-bold py-2.5 px-5 rounded-xl border border-slate-700 transition-all flex items-center gap-2">
+                            <i data-lucide="arrow-left" class="w-4 h-4"></i> <span class="hidden sm:inline">Torna Indietro</span>
+                        </button>
+                    </div>
                 </div>
             </header>
             
             <main class="flex-1 max-w-7xl mx-auto px-4 py-8 w-full scale-up">
                 <div class="bg-white rounded-3xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
                     <div class="p-6 sm:p-8 border-b flex items-center justify-between bg-slate-50">
-                        <h2 class="text-2xl sm:text-3xl font-black text-slate-800 uppercase tracking-tight">
+                        <h2 class="text-2xl sm:text-3xl font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
                             ${state.currentMonthDate.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })}
+                            ${state.isSyncing ? '<i data-lucide="refresh-cw" class="w-5 h-5 text-indigo-400 spin-anim ml-2"></i>' : ''}
                         </h2>
                         <div class="flex gap-2">
                             <button onclick="changeMonth(-1)" class="p-3 bg-white border border-slate-200 rounded-xl hover:text-indigo-600 hover:border-indigo-200 shadow-sm transition-all active:scale-90">
@@ -764,7 +797,7 @@
         let html = '';
         let totalCap = 0; 
         Object.keys(FLOORS).forEach(f => totalCap += FLOORS[f].maxSw);
-        const totalUsers = USERS.length; // Calcolo totale dipendenti
+        const totalUsers = USERS.length; 
         
         for (let i = 0; i < firstDay; i++) {
             html += `<div class="h-36 rounded-2xl bg-slate-50/50 border border-dashed border-slate-200"></div>`;
@@ -778,9 +811,6 @@
             
             const dayB = state.bookings.filter(b => b.date === dateStr);
             
-            // Due percentuali diverse: 
-            // 1. capPerc serve solo per il colore di saturazione (limite SW raggiunto)
-            // 2. popPerc calcola l'incidenza totale sullo studio (es. 2 su 39)
             const capPerc = totalCap > 0 ? Math.round((dayB.length / totalCap) * 100) : 0;
             const popPerc = totalUsers > 0 ? Math.round((dayB.length / totalUsers) * 100) : 0;
             
