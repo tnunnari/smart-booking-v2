@@ -23,17 +23,19 @@
             from { transform: scale(0.95); opacity: 0; }
             to { transform: scale(1); opacity: 1; }
         }
+        /* Pulsante disabilitato in caricamento */
+        .btn-loading { opacity: 0.7; pointer-events: none; }
     </style>
 </head>
 <body class="bg-slate-50 font-sans text-slate-800 min-h-screen flex flex-col selection:bg-indigo-200 selection:text-indigo-900">
     <div id="app" class="w-full min-h-screen flex flex-col transition-all duration-300"></div>
     <div id="notification-container" class="fixed top-6 left-1/2 transform -translate-x-1/2 z-[100] pointer-events-none flex flex-col gap-2 w-[90%] max-w-md"></div>
+
 <script>
     // ==========================================
     // CONFIGURAZIONE DATABASE GOOGLE
     // ==========================================
-    // SOSTITUISCI QUESTO URL CON IL TUO URL UFFICIALE (quello che finisce con /exec)
-    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxEiZioys0Xb5ZZhR0FinxPPfqYSxo61KUYbdKz8J_FPUOypOOLHwxIfQ6QDiYYa8xUNg/exec"; 
+    const SCRIPT_URL = "INSERISCI_QUI_IL_TUO_URL_DI_APPS_SCRIPT"; 
     
     // --- VARIABILI DI STATO ---
     let USERS = [];
@@ -51,7 +53,8 @@
         currentMonthDate: new Date(today.getFullYear(), today.getMonth(), 1),
         selectedDate: today,
         bookings: [],
-        isLoading: false
+        isLoading: false,
+        isSaving: false // Nuova variabile per bloccare doppi click
     };
 
     // ==========================================
@@ -64,7 +67,6 @@
         const day = String(dateObj.getDate()).padStart(2, '0');
         return `${year}-${month}-${day}`;
     }
-
     function parseAnyDateToYYYYMMDD(dateInput) {
         if (!dateInput) return null;
         let d = String(dateInput).trim();
@@ -91,14 +93,12 @@
         if (!isNaN(parsed.getTime())) return toYYYYMMDD(parsed);
         return null;
     }
-
     function formatDisplayDate(dateStr) {
         if (!dateStr) return "";
         const parts = dateStr.split('-');
         const dateObj = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
         return dateObj.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     }
-
     function getEaster(year) {
         let f = Math.floor, G = year % 19, C = f(year / 100),
             H = (C - f(C / 4) - f((8 * C + 13) / 25) + 19 * G + 15) % 30,
@@ -107,13 +107,11 @@
             L = I - J, month = 3 + f((L + 40) / 44), day = L + 28 - 31 * f(month / 4);
         return new Date(year, month - 1, day);
     }
-
     function getClosureReason(dateObj) {
         const day = dateObj.getDate();
         const month = dateObj.getMonth();
         const year = dateObj.getFullYear();
         const dayOfWeek = dateObj.getDay();
-
         if ((month === 11 && day >= 24) || (month === 0 && day <= 6)) {
             if (month === 11 && day === 25) return "Natale";
             if (month === 11 && day === 26) return "Santo Stefano";
@@ -134,7 +132,6 @@
         if (month === pasquetta.getMonth() && day === pasquetta.getDate()) {
             return "Lunedì di Pasquetta";
         }
-        
         if ((month === 6 || month === 7) && dayOfWeek === 5) {
             return "Chiusura Venerdì Estivo";
         }
@@ -145,27 +142,37 @@
     }
 
     // ==========================================
-    // COMUNICAZIONE COL DATABASE (PERFETTA)
+    // COMUNICAZIONE COL DATABASE (SINCRONA E SICURA)
     // ==========================================
-    
     async function loadDataFromGoogleSheets() {
         try {
             state.isLoading = true;
             render();
             
-            // Bypass sicuro per la cache del browser. 
-            // Costringe il browser a scaricare dati freschi ad ogni F5 senza bloccare Google.
-            const nocache = new Date().getTime();
-            const url = `${SCRIPT_URL}?action=getData&t=${nocache}`;
+            let data;
+            if (SCRIPT_URL === "INSERISCI_QUI_IL_TUO_URL_DI_APPS_SCRIPT" || !SCRIPT_URL.startsWith("http")) {
+                console.warn("ATTENZIONE: URL Apps Script non inserito. Uso dati di prova per l'anteprima.");
+                data = {
+                    users: [
+                        { id: 1, name: "Mario Rossi", floor: "Architettura", password: "123" },
+                        { id: 2, name: "Giulia Bianchi", floor: "Interior Design", password: "123" },
+                        { id: 3, name: "Luigi Verdi", floor: "New Space", password: "123" }
+                    ],
+                    bookings: []
+                };
+                await new Promise(r => setTimeout(r, 800)); // Simula caricamento
+            } else {
+                // Bypass aggressivo per evitare cache di Google e del Browser
+                const nocache = new Date().getTime() + Math.random();
+                const url = `${SCRIPT_URL}?action=getData&t=${nocache}`;
+                
+                // Aggiunto cache: 'no-store' per forzare lo scaricamento reale
+                const response = await fetch(url, { redirect: "follow", cache: "no-store" });
+                if (!response.ok) throw new Error("Errore di rete con Google.");
+                
+                data = await response.json();
+            }
             
-            const response = await fetch(url, { redirect: "follow" });
-            
-            if (!response.ok) throw new Error("Errore di rete con Google.");
-            
-            const data = await response.json();
-            
-            // CONTROLLO SALVAVITA: Se il file Google ha un errore, ci avvisa e SI FERMA.
-            // Prima questo pezzo mancava, quindi il sito svuotava tutte le prenotazioni!
             if (data.error) {
                 console.error("Errore Apps Script:", data.message);
                 throw new Error("Errore interno del Foglio Google: " + data.message);
@@ -173,8 +180,9 @@
             
             USERS = data.users || [];
             
-            // Leggiamo i dati in modo blindato. Qualsiasi formato o errore di battitura viene gestito.
             const rawBookings = data.bookings || [];
+            console.log("📥 Dati grezzi ricevuti dal foglio:", rawBookings); // DEBUG per F12
+            
             state.bookings = rawBookings.map((b, index) => {
                 let parsedDate = parseAnyDateToYYYYMMDD(b.date || b.Date || b.data);
                 return {
@@ -186,13 +194,15 @@
                 };
             }).filter(b => b.date !== null && b.userId !== '' && b.userId !== 'undefined');
             
+            console.log("✅ Dati filtrati e inseriti nel calendario:", state.bookings); // DEBUG per F12
+
             calculateDynamicFloors();
             state.isLoading = false;
             render();
             
         } catch (error) {
             console.error("Dettaglio Errore:", error);
-            showNotification(error.message, "error"); // Mostra il VERO errore sullo schermo!
+            showNotification("Errore di caricamento. Premi F5.", "error"); 
             state.isLoading = false;
             render();
         }
@@ -211,15 +221,28 @@
         });
     }
 
-    function syncBookingWithGoogle(bookingData, actionType) {
-        // Salvataggio silente. L'utente vede la prenotazione subito, il server la salva dietro le quinte.
-        fetch(SCRIPT_URL, {
-            method: "POST",
-            body: JSON.stringify({ action: actionType, booking: bookingData }),
-            redirect: "follow" 
-        }).catch(e => {
-            showNotification("Errore di connessione. Riprova più tardi.", "error");
-        });
+    // ORA QUESTA FUNZIONE ASPETTA GOOGLE E RESTITUISCE TRUE O FALSE
+    async function syncBookingWithGoogle(bookingData, actionType) {
+        try {
+            if (SCRIPT_URL === "INSERISCI_QUI_IL_TUO_URL_DI_APPS_SCRIPT" || !SCRIPT_URL.startsWith("http")) {
+                console.warn("Modalità di prova: simulazione salvataggio in corso...");
+                await new Promise(r => setTimeout(r, 1000));
+                return true;
+            }
+
+            const response = await fetch(SCRIPT_URL, {
+                method: "POST",
+                body: JSON.stringify({ action: actionType, booking: bookingData }),
+                redirect: "follow" 
+            });
+            const data = await response.json();
+            if(data.status !== "success") throw new Error(data.message);
+            return true;
+        } catch(e) {
+            console.error("Errore salvataggio:", e);
+            showNotification("Connessione lenta. Riprova.", "error");
+            return false;
+        }
     }
 
     // ==========================================
@@ -242,7 +265,7 @@
             toast.style.transform = 'translate(-50%, -20px)';
             toast.style.transition = 'all 0.3s ease';
             setTimeout(() => toast.remove(), 300);
-        }, 5000); // Aumentato a 5 secondi per far leggere bene gli eventuali errori
+        }, 5000); 
     }
 
     function getCapacityColorLevels(percentage) {
@@ -269,12 +292,16 @@
     function closeDayDetails() { state.showDayDetails = null; render(); }
     function changeMonth(offset) { state.currentMonthDate = new Date(state.currentMonthDate.getFullYear(), state.currentMonthDate.getMonth() + offset, 1); render(); }
     function selectDate(dateStr) { 
+        if(state.isSaving) return; // Blocca click se sta salvando
         const parts = dateStr.split('-'); 
         state.selectedDate = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0); 
         render(); 
     }
 
-    function toggleBooking() {
+    // VERSIONE ASINCRONA: ASPETTA IL DATABASE
+    async function toggleBooking() {
+        if(state.isSaving) return;
+
         const selectedDateStr = toYYYYMMDD(state.selectedDate);
         const dayOfWeek = state.selectedDate.getDay();
         const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
@@ -285,20 +312,32 @@
         
         const existingIndex = state.bookings.findIndex(b => String(b.userId) === String(state.currentUser.id) && b.date === selectedDateStr);
         
+        // CANCELLAZIONE
         if (existingIndex > -1) {
             const bToRemove = state.bookings[existingIndex];
-            state.bookings.splice(existingIndex, 1); // Rimuove dalla grafica
-            showNotification("Annullamento registrato.", "success");
-            syncBookingWithGoogle(bToRemove, "remove"); // Invia al server
+            
+            // Mettiamo la UI in caricamento
+            state.isSaving = true;
+            render(); 
+            showNotification("Rimozione in corso...", "success");
+
+            const success = await syncBookingWithGoogle(bToRemove, "remove");
+            
+            if(success) {
+                state.bookings.splice(existingIndex, 1);
+                showNotification("Annullamento confermato.", "success");
+            }
+            state.isSaving = false;
             render();
             return;
         }
         
+        // CONTROLLI PRIMA DI PRENOTARE
         const monStr = selectedDateStr.substring(0, 7);
         const userMonthBookings = state.bookings.filter(b => String(b.userId) === String(state.currentUser.id) && b.date.startsWith(monStr));
         
         if (userMonthBookings.length >= MAX_DAYS_PER_MONTH) { 
-            showNotification(`Hai già raggiunto il limite di ${MAX_DAYS_PER_MONTH} giorni questo mese.`, "error"); return; 
+            showNotification(`Limite di ${MAX_DAYS_PER_MONTH} giorni mensili raggiunto.`, "error"); return; 
         }
         
         if (dayOfWeek === 5) {
@@ -317,10 +356,23 @@
         if (floorBookings.length >= floorMax) { 
             showNotification(`Capacità per il piano ${state.currentUser.floor} esaurita in questa data.`, "error"); return; 
         }
+
+        // PRENOTAZIONE
         const newB = { id: Date.now(), userId: state.currentUser.id, name: state.currentUser.name, date: selectedDateStr, floor: state.currentUser.floor };
-        state.bookings.push(newB); // Aggiunge alla grafica
-        showNotification("Prenotazione confermata!", "success");
-        syncBookingWithGoogle(newB, "add"); // Invia al server
+        
+        // Mettiamo la UI in caricamento
+        state.isSaving = true;
+        render();
+        showNotification("Connessione a Google in corso...", "success");
+
+        const success = await syncBookingWithGoogle(newB, "add");
+
+        if(success) {
+            state.bookings.push(newB);
+            showNotification("Prenotazione salvata con successo!", "success");
+        }
+        
+        state.isSaving = false;
         render();
     }
 
@@ -428,6 +480,11 @@
             btnContent = `<div class="text-center p-5 bg-red-100 rounded-2xl text-red-800 font-black border border-red-300 uppercase tracking-widest flex flex-col items-center justify-center gap-1 shadow-inner"><i data-lucide="calendar-x-2" class="w-6 h-6 mb-1 text-red-600"></i> CHIUSO<span class="text-xs opacity-80 normal-case">${chiusuraMotivo}</span></div>`;
         } else if (isWeekend) {
             btnContent = `<div class="text-center p-5 bg-red-50 rounded-2xl text-red-600 font-black border border-red-200 uppercase tracking-widest flex items-center justify-center gap-2"><i data-lucide="coffee" class="w-5 h-5"></i> WEEKEND - NON LAVORATIVO</div>`;
+        } else if (state.isSaving) {
+            // PULSANTE IN STATO DI CARICAMENTO
+            btnContent = `<button disabled class="w-full py-5 px-4 rounded-2xl font-black text-white shadow-xl flex items-center justify-center gap-3 bg-slate-500 btn-loading cursor-not-allowed">
+                <i data-lucide="loader-2" class="w-6 h-6 animate-spin"></i> ATTENDI GOOGLE...
+            </button>`;
         } else {
             btnContent = `<button onclick="toggleBooking()" class="w-full py-5 px-4 rounded-2xl font-black text-white shadow-xl transition-all transform active:scale-95 flex items-center justify-center gap-3 ${hasBooked ? 'bg-red-500 hover:bg-red-600 shadow-red-200/50' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200/50'}">
                 <i data-lucide="${hasBooked ? 'x' : 'check'}" class="w-6 h-6"></i>
@@ -606,7 +663,7 @@
             
             const colors = getCapacityColorLevels(relPerc);
             
-            let cCl = `day-cell aspect-square p-2 sm:p-3 rounded-2xl border-2 flex flex-col relative transition-all cursor-pointer `;
+            let cCl = `day-cell aspect-square p-2 sm:p-3 rounded-2xl border-2 flex flex-col relative transition-all ${state.isSaving ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'} `;
             let bH = "";
             let numColor = "text-slate-700";
             
@@ -810,7 +867,6 @@
         }
         return html;
     }
-
     function attachBoardListeners() { 
         document.querySelectorAll('.board-day-cell').forEach(c => { 
             if(c.dataset.date) c.onclick = () => openDayDetails(c.dataset.date); 
