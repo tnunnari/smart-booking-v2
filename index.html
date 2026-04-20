@@ -33,8 +33,8 @@
     // ==========================================
     // CONFIGURAZIONE DATABASE GOOGLE
     // ==========================================
-    // NOTA: Se questo URL non dovesse funzionare, sostituiscilo con l'URL di Google Apps Script terminante in "/exec"
-    const SCRIPT_URL = "https://script.google.com/macros/library/d/1N29p-nlU93QckhxsP7NGZk91mCfoKRDFOB7mvH5UvGTQICx6Mb_0jMJR/5"; 
+    // L'URL corretto della tua Applicazione Web
+    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxxWGo33SrlOUEpWO20ru25X5QNLOE3pQKfoVZDDFeNF-cL1b1ro1TAAozzyMjUoF9h/exec"; 
     
     // Costanti solo per uso grafico (i veri controlli sono sul file Apps Script)
     const MAX_DAYS_PER_MONTH = 6;
@@ -63,12 +63,28 @@
     
     // La chiave per aggirare i problemi CORS usando Content-Type text/plain e fetch in POST
     async function callAPI(payload) {
-        const response = await fetch(SCRIPT_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify(payload)
-        });
-        return await response.json();
+        // Controllo di sicurezza: verifichiamo che l'utente non abbia inserito un URL errato
+        if (SCRIPT_URL.includes("/library/")) {
+            throw new Error("L'URL inserito è errato. Devi usare l'URL dell'Applicazione Web che finisce con '/exec'.");
+        }
+
+        try {
+            const response = await fetch(SCRIPT_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                redirect: 'follow', // Fondamentale per i redirect di sicurezza di Google
+                body: JSON.stringify(payload)
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Errore HTTP Server: ${response.status}`);
+            }
+            
+            return await response.json();
+        } catch (error) {
+            console.error("Errore Fetch:", error);
+            throw new Error("Connessione bloccata dal browser. Assicurati che l'URL finisca con '/exec' e sia pubblicato per 'Chiunque'.");
+        }
     }
 
     // Caricamento Dati Unificato
@@ -88,7 +104,7 @@
             }
         } catch (error) {
             console.error("Dettaglio Errore:", error);
-            showNotification("Errore di connessione a Google.", "error");
+            showNotification(error.message, "error");
         } finally {
             state.isLoading = false;
             render();
@@ -216,7 +232,7 @@
                 showNotification(res.error || "Password errata.", "error");
             }
         } catch (error) {
-            showNotification("Errore di connessione con il Server", "error");
+            showNotification(error.message || "Errore di connessione con il Server", "error");
         } finally {
             state.isSaving = false;
             render();
@@ -274,7 +290,7 @@
                 showNotification(res.error, "error");
             }
         } catch (error) {
-            showNotification("Connessione instabile. Riprova più tardi.", "error");
+            showNotification(error.message || "Connessione instabile. Riprova più tardi.", "error");
         } finally {
             state.isSaving = false;
             render();
