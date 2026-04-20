@@ -23,8 +23,6 @@
             from { transform: scale(0.95); opacity: 0; }
             to { transform: scale(1); opacity: 1; }
         }
-        /* Pulsante disabilitato in caricamento */
-        .btn-loading { opacity: 0.7; pointer-events: none; }
     </style>
 </head>
 <body class="bg-slate-50 font-sans text-slate-800 min-h-screen flex flex-col selection:bg-indigo-200 selection:text-indigo-900">
@@ -35,16 +33,19 @@
     // ==========================================
     // CONFIGURAZIONE DATABASE GOOGLE
     // ==========================================
-    const SCRIPT_URL = "INSERISCI_QUI_IL_TUO_URL_DI_APPS_SCRIPT"; 
+    // NOTA: Se questo URL non dovesse funzionare, sostituiscilo con l'URL di Google Apps Script terminante in "/exec"
+    const SCRIPT_URL = "https://script.google.com/macros/library/d/1N29p-nlU93QckhxsP7NGZk91mCfoKRDFOB7mvH5UvGTQICx6Mb_0jMJR/5"; 
     
-    // --- VARIABILI DI STATO ---
-    let USERS = [];
-    let FLOORS = {};
+    // Costanti solo per uso grafico (i veri controlli sono sul file Apps Script)
     const MAX_DAYS_PER_MONTH = 6;
     const MAX_FRIDAYS_PER_MONTH = 2;
     const today = new Date();
     
+    // --- VARIABILI DI STATO ---
     const state = {
+        users: [], 
+        floorStats: {}, 
+        bookings: [],
         loginStep: 1,
         loginUser: null,
         currentUser: null,
@@ -52,13 +53,50 @@
         showDayDetails: null,
         currentMonthDate: new Date(today.getFullYear(), today.getMonth(), 1),
         selectedDate: today,
-        bookings: [],
         isLoading: false,
-        isSaving: false // Nuova variabile per bloccare doppi click
+        isSaving: false
     };
 
     // ==========================================
-    // UTILITY: MOTORE DATE E FESTIVITÀ
+    // UTILITY: IL TUO MOTORE DI COMUNICAZIONE NATIVO (POST)
+    // ==========================================
+    
+    // La chiave per aggirare i problemi CORS usando Content-Type text/plain e fetch in POST
+    async function callAPI(payload) {
+        const response = await fetch(SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload)
+        });
+        return await response.json();
+    }
+
+    // Caricamento Dati Unificato
+    async function loadDataFromGoogleSheets() {
+        state.isLoading = true;
+        render();
+        
+        try {
+            const res = await callAPI({ action: 'getData' });
+            if (res.success) {
+                state.users = res.data.users || [];
+                state.floorStats = res.data.floorStats || {};
+                // Il backend restituisce già le date nel formato YYYY-MM-DD corretto
+                state.bookings = (res.data.bookings || []).filter(b => b.date !== null && b.userId !== '');
+            } else {
+                throw new Error(res.error);
+            }
+        } catch (error) {
+            console.error("Dettaglio Errore:", error);
+            showNotification("Errore di connessione a Google.", "error");
+        } finally {
+            state.isLoading = false;
+            render();
+        }
+    }
+
+    // ==========================================
+    // MOTORE DATE E FESTIVITÀ
     // ==========================================
     function toYYYYMMDD(dateObj) {
         if (!dateObj) return null;
@@ -67,38 +105,14 @@
         const day = String(dateObj.getDate()).padStart(2, '0');
         return `${year}-${month}-${day}`;
     }
-    function parseAnyDateToYYYYMMDD(dateInput) {
-        if (!dateInput) return null;
-        let d = String(dateInput).trim();
-        if (d.includes('T')) d = d.split('T')[0]; 
-        
-        let match = d.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-        if (match) {
-            let day = match[1].padStart(2, '0');
-            let month = match[2].padStart(2, '0');
-            let year = match[3];
-            if (year.length === 2) year = "20" + year; 
-            return `${year}-${month}-${day}`;
-        }
-        
-        match = d.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
-        if (match) {
-            let year = match[1];
-            let month = match[2].padStart(2, '0');
-            let day = match[3].padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        }
-        
-        let parsed = new Date(d);
-        if (!isNaN(parsed.getTime())) return toYYYYMMDD(parsed);
-        return null;
-    }
+
     function formatDisplayDate(dateStr) {
         if (!dateStr) return "";
         const parts = dateStr.split('-');
         const dateObj = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
         return dateObj.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     }
+
     function getEaster(year) {
         let f = Math.floor, G = year % 19, C = f(year / 100),
             H = (C - f(C / 4) - f((8 * C + 13) / 25) + 19 * G + 15) % 30,
@@ -107,6 +121,7 @@
             L = I - J, month = 3 + f((L + 40) / 44), day = L + 28 - 31 * f(month / 4);
         return new Date(year, month - 1, day);
     }
+
     function getClosureReason(dateObj) {
         const day = dateObj.getDate();
         const month = dateObj.getMonth();
@@ -142,110 +157,6 @@
     }
 
     // ==========================================
-    // COMUNICAZIONE COL DATABASE (SINCRONA E SICURA)
-    // ==========================================
-    async function loadDataFromGoogleSheets() {
-        try {
-            state.isLoading = true;
-            render();
-            
-            let data;
-            if (SCRIPT_URL === "INSERISCI_QUI_IL_TUO_URL_DI_APPS_SCRIPT" || !SCRIPT_URL.startsWith("http")) {
-                console.warn("ATTENZIONE: URL Apps Script non inserito. Uso dati di prova per l'anteprima.");
-                data = {
-                    users: [
-                        { id: 1, name: "Mario Rossi", floor: "Architettura", password: "123" },
-                        { id: 2, name: "Giulia Bianchi", floor: "Interior Design", password: "123" },
-                        { id: 3, name: "Luigi Verdi", floor: "New Space", password: "123" }
-                    ],
-                    bookings: []
-                };
-                await new Promise(r => setTimeout(r, 800)); // Simula caricamento
-            } else {
-                // Bypass aggressivo per evitare cache di Google e del Browser
-                const nocache = new Date().getTime() + Math.random();
-                const url = `${SCRIPT_URL}?action=getData&t=${nocache}`;
-                
-                // Aggiunto cache: 'no-store' per forzare lo scaricamento reale
-                const response = await fetch(url, { redirect: "follow", cache: "no-store" });
-                if (!response.ok) throw new Error("Errore di rete con Google.");
-                
-                data = await response.json();
-            }
-            
-            if (data.error) {
-                console.error("Errore Apps Script:", data.message);
-                throw new Error("Errore interno del Foglio Google: " + data.message);
-            }
-            
-            USERS = data.users || [];
-            
-            const rawBookings = data.bookings || [];
-            console.log("📥 Dati grezzi ricevuti dal foglio:", rawBookings); // DEBUG per F12
-            
-            state.bookings = rawBookings.map((b, index) => {
-                let parsedDate = parseAnyDateToYYYYMMDD(b.date || b.Date || b.data);
-                return {
-                    id: b.id || b.Id || b.ID || `manual-${index}`,
-                    userId: String(b.userId || b.userid || b.Userid || ''), 
-                    name: String(b.name || b.Name || b.nome || ''),
-                    floor: String(b.floor || b.Floor || b.piano || ''),
-                    date: parsedDate
-                };
-            }).filter(b => b.date !== null && b.userId !== '' && b.userId !== 'undefined');
-            
-            console.log("✅ Dati filtrati e inseriti nel calendario:", state.bookings); // DEBUG per F12
-
-            calculateDynamicFloors();
-            state.isLoading = false;
-            render();
-            
-        } catch (error) {
-            console.error("Dettaglio Errore:", error);
-            showNotification("Errore di caricamento. Premi F5.", "error"); 
-            state.isLoading = false;
-            render();
-        }
-    }
-
-    function calculateDynamicFloors() {
-        FLOORS = {};
-        USERS.forEach(user => {
-            if (!FLOORS[user.floor]) { FLOORS[user.floor] = { total: 0, maxSw: 0 }; }
-            FLOORS[user.floor].total += 1;
-        });
-        Object.keys(FLOORS).forEach(floorName => {
-            let limit = Math.round(FLOORS[floorName].total * 0.30);
-            if (limit < 1 && FLOORS[floorName].total > 0) limit = 1; 
-            FLOORS[floorName].maxSw = limit;
-        });
-    }
-
-    // ORA QUESTA FUNZIONE ASPETTA GOOGLE E RESTITUISCE TRUE O FALSE
-    async function syncBookingWithGoogle(bookingData, actionType) {
-        try {
-            if (SCRIPT_URL === "INSERISCI_QUI_IL_TUO_URL_DI_APPS_SCRIPT" || !SCRIPT_URL.startsWith("http")) {
-                console.warn("Modalità di prova: simulazione salvataggio in corso...");
-                await new Promise(r => setTimeout(r, 1000));
-                return true;
-            }
-
-            const response = await fetch(SCRIPT_URL, {
-                method: "POST",
-                body: JSON.stringify({ action: actionType, booking: bookingData }),
-                redirect: "follow" 
-            });
-            const data = await response.json();
-            if(data.status !== "success") throw new Error(data.message);
-            return true;
-        } catch(e) {
-            console.error("Errore salvataggio:", e);
-            showNotification("Connessione lenta. Riprova.", "error");
-            return false;
-        }
-    }
-
-    // ==========================================
     // LOGICA DI BUSINESS & AZIONI
     // ==========================================
     function showNotification(message, type = 'error') {
@@ -265,40 +176,74 @@
             toast.style.transform = 'translate(-50%, -20px)';
             toast.style.transition = 'all 0.3s ease';
             setTimeout(() => toast.remove(), 300);
-        }, 5000); 
+        }, 6000); 
     }
 
     function getCapacityColorLevels(percentage) {
-        if (percentage >= 100) return { bar: 'bg-red-500', badgeBg: 'bg-red-50', badgeText: 'text-red-700', badgeBorder: 'border-red-200' };
-        if (percentage >= 50) return { bar: 'bg-orange-500', badgeBg: 'bg-orange-50', badgeText: 'text-orange-700', badgeBorder: 'border-orange-200' };
-        if (percentage > 0) return { bar: 'bg-amber-400', badgeBg: 'bg-amber-50', badgeText: 'text-amber-700', badgeBorder: 'border-amber-200' };
-        return { bar: 'bg-emerald-500', badgeBg: 'bg-emerald-50', badgeText: 'text-emerald-700', badgeBorder: 'border-emerald-200' };
+        if (percentage >= 100) return { bar: 'bg-red-500', badgeBg: 'bg-red-50', badgeText: 'text-red-700' };
+        if (percentage >= 50) return { bar: 'bg-orange-500', badgeBg: 'bg-orange-50', badgeText: 'text-orange-700' };
+        if (percentage > 0) return { bar: 'bg-amber-400', badgeBg: 'bg-amber-50', badgeText: 'text-amber-700' };
+        return { bar: 'bg-emerald-500', badgeBg: 'bg-emerald-50', badgeText: 'text-emerald-700' };
     }
 
-    function initApp() { loadDataFromGoogleSheets(); }
-    function selectLoginUser(userId) { state.loginUser = USERS.find(u => u.id == userId); state.loginStep = 2; render(); }
+    function initApp() { 
+        // Controllo della sessione locale per non ripetere il login
+        const savedSession = localStorage.getItem('sw_auth_user');
+        if (savedSession) {
+            state.currentUser = JSON.parse(savedSession);
+        }
+        loadDataFromGoogleSheets(); 
+    }
+
+    function selectLoginUser(userId) { state.loginUser = state.users.find(u => u.id == userId); state.loginStep = 2; render(); }
     function cancelLogin() { state.loginUser = null; state.loginStep = 1; render(); }
-    function submitLogin() {
+    
+    // Login sicuro eseguito dal Backend Google
+    async function submitLogin() {
         const pwdInput = document.getElementById('password-input').value;
-        if (String(pwdInput) === String(state.loginUser.password)) {
-            state.currentUser = state.loginUser; state.loginStep = 1; render();
-        } else { showNotification("Password errata. Riprova.", "error"); }
+        if (!pwdInput) return showNotification("Inserisci la password", "error");
+
+        state.isSaving = true;
+        render();
+
+        try {
+            const res = await callAPI({ action: 'login', name: state.loginUser.name, password: pwdInput });
+            if (res.success) {
+                state.currentUser = res.data;
+                state.loginStep = 1;
+                localStorage.setItem('sw_auth_user', JSON.stringify(res.data)); // Salva la sessione
+            } else {
+                showNotification(res.error || "Password errata.", "error");
+            }
+        } catch (error) {
+            showNotification("Errore di connessione con il Server", "error");
+        } finally {
+            state.isSaving = false;
+            render();
+        }
     }
     
-    function logout() { state.currentUser = null; state.isBoardView = false; state.showDayDetails = null; render(); }
+    function logout() { 
+        state.currentUser = null; 
+        state.isBoardView = false; 
+        state.showDayDetails = null; 
+        localStorage.removeItem('sw_auth_user'); // Distrugge la sessione
+        render(); 
+    }
+
     function enterBoardView() { state.isBoardView = true; render(); }
     function exitBoardView() { state.isBoardView = false; state.showDayDetails = null; render(); }
     function openDayDetails(dateStr) { state.showDayDetails = dateStr; render(); }
     function closeDayDetails() { state.showDayDetails = null; render(); }
     function changeMonth(offset) { state.currentMonthDate = new Date(state.currentMonthDate.getFullYear(), state.currentMonthDate.getMonth() + offset, 1); render(); }
     function selectDate(dateStr) { 
-        if(state.isSaving) return; // Blocca click se sta salvando
+        if(state.isSaving) return; 
         const parts = dateStr.split('-'); 
         state.selectedDate = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0); 
         render(); 
     }
 
-    // VERSIONE ASINCRONA: ASPETTA IL DATABASE
+    // Processamento prenotazioni unificato e delegato al server!
     async function toggleBooking() {
         if(state.isSaving) return;
 
@@ -307,86 +252,46 @@
         const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
         const chiusuraMotivo = getClosureReason(state.selectedDate);
         
-        if (chiusuraMotivo) { showNotification(`Studio chiuso: ${chiusuraMotivo}`, "error"); return; }
-        if (isWeekend) { showNotification("Non puoi prenotare durante il weekend.", "error"); return; }
+        // Controlli bloccanti preventivi
+        if (chiusuraMotivo) return showNotification(`Studio chiuso: ${chiusuraMotivo}`, "error");
+        if (isWeekend) return showNotification("Non puoi prenotare durante il weekend.", "error");
         
         const existingIndex = state.bookings.findIndex(b => String(b.userId) === String(state.currentUser.id) && b.date === selectedDateStr);
+        const actionType = existingIndex > -1 ? 'delete' : 'book';
         
-        // CANCELLAZIONE
-        if (existingIndex > -1) {
-            const bToRemove = state.bookings[existingIndex];
-            
-            // Mettiamo la UI in caricamento
-            state.isSaving = true;
-            render(); 
-            showNotification("Rimozione in corso...", "success");
-
-            const success = await syncBookingWithGoogle(bToRemove, "remove");
-            
-            if(success) {
-                state.bookings.splice(existingIndex, 1);
-                showNotification("Annullamento confermato.", "success");
-            }
-            state.isSaving = false;
-            render();
-            return;
-        }
-        
-        // CONTROLLI PRIMA DI PRENOTARE
-        const monStr = selectedDateStr.substring(0, 7);
-        const userMonthBookings = state.bookings.filter(b => String(b.userId) === String(state.currentUser.id) && b.date.startsWith(monStr));
-        
-        if (userMonthBookings.length >= MAX_DAYS_PER_MONTH) { 
-            showNotification(`Limite di ${MAX_DAYS_PER_MONTH} giorni mensili raggiunto.`, "error"); return; 
-        }
-        
-        if (dayOfWeek === 5) {
-            let fridaysCount = userMonthBookings.filter(b => {
-                const parts = b.date.split('-');
-                const d = new Date(parts[0], parts[1]-1, parts[2], 12,0,0);
-                return d.getDay() === 5;
-            }).length;
-            if (fridaysCount >= MAX_FRIDAYS_PER_MONTH) { 
-                showNotification(`Hai già prenotato ${MAX_FRIDAYS_PER_MONTH} venerdì questo mese.`, "error"); return; 
-            }
-        }
-        const floorBookings = state.bookings.filter(b => b.floor === state.currentUser.floor && b.date === selectedDateStr);
-        const floorMax = FLOORS[state.currentUser.floor] ? FLOORS[state.currentUser.floor].maxSw : 1;
-        
-        if (floorBookings.length >= floorMax) { 
-            showNotification(`Capacità per il piano ${state.currentUser.floor} esaurita in questa data.`, "error"); return; 
-        }
-
-        // PRENOTAZIONE
-        const newB = { id: Date.now(), userId: state.currentUser.id, name: state.currentUser.name, date: selectedDateStr, floor: state.currentUser.floor };
-        
-        // Mettiamo la UI in caricamento
         state.isSaving = true;
         render();
-        showNotification("Connessione a Google in corso...", "success");
+        showNotification(actionType === 'delete' ? "Contatto il server per l'annullamento..." : "Verifico disponibilità sul Server...", "success");
 
-        const success = await syncBookingWithGoogle(newB, "add");
-
-        if(success) {
-            state.bookings.push(newB);
-            showNotification("Prenotazione salvata con successo!", "success");
+        try {
+            const res = await callAPI({ action: actionType, userId: state.currentUser.id, date: selectedDateStr });
+            
+            if (res.success) {
+                showNotification(actionType === 'delete' ? "Annullamento confermato!" : "Prenotazione confermata!", "success");
+                await loadDataFromGoogleSheets(); // Ricarichiamo i dati freschi per mostrare i grafici aggiornati
+            } else {
+                // Il Backend ha bloccato l'operazione (es: limite mensile superato)
+                showNotification(res.error, "error");
+            }
+        } catch (error) {
+            showNotification("Connessione instabile. Riprova più tardi.", "error");
+        } finally {
+            state.isSaving = false;
+            render();
         }
-        
-        state.isSaving = false;
-        render();
     }
 
     // ==========================================
-    // MOTORE DI RENDERING HTML
+    // MOTORE DI RENDERING HTML (Design Originale)
     // ==========================================
     function render() {
         const app = document.getElementById('app');
-        if (state.isLoading && USERS.length === 0) { 
+        if (state.isLoading && state.users.length === 0) { 
             app.innerHTML = `
             <div class="flex-1 flex flex-col items-center justify-center p-4 bg-slate-900">
                 <i data-lucide="loader-2" class="w-16 h-16 text-indigo-500 animate-spin mb-6"></i>
-                <h1 class="text-white text-2xl font-black tracking-tight mb-2">Connessione al Server...</h1>
-                <p class="text-slate-400 font-medium">Lettura Database in corso</p>
+                <h1 class="text-white text-2xl font-black tracking-tight mb-2">Sincronizzazione in corso...</h1>
+                <p class="text-slate-400 font-medium">Lettura Database Google</p>
             </div>`; 
         }
         else if (state.isBoardView) { app.innerHTML = renderBoardScreen(); attachBoardListeners(); }
@@ -396,7 +301,7 @@
     }
 
     function renderLoginScreen() {
-        let userButtons = USERS.map(user => `
+        let userButtons = state.users.map(user => `
             <button onclick="selectLoginUser(${user.id})" class="w-full flex items-center justify-between p-4 border border-slate-100 rounded-2xl hover:border-indigo-200 hover:bg-indigo-50/50 transition-all group shadow-sm bg-white">
                 <div class="flex items-center gap-4">
                     <div class="w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-black text-lg">${user.name.charAt(0)}</div>
@@ -441,7 +346,7 @@
                         <input type="password" id="password-input" onkeypress="if(event.key==='Enter')submitLogin()" class="w-full px-5 py-4 rounded-2xl bg-slate-50 border-2 border-slate-200 focus:border-indigo-500 focus:bg-white focus:outline-none transition-all text-lg tracking-widest text-center" placeholder="••••••••">
                     </div>
                     <button onclick="submitLogin()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-2xl shadow-xl shadow-indigo-200 transition-all active:scale-[0.98]">
-                        Accedi alla Dashboard
+                        ${state.isSaving ? 'Controllo Credenziali...' : 'Accedi alla Dashboard'}
                     </button>
                 </div>`;
         }
@@ -481,9 +386,8 @@
         } else if (isWeekend) {
             btnContent = `<div class="text-center p-5 bg-red-50 rounded-2xl text-red-600 font-black border border-red-200 uppercase tracking-widest flex items-center justify-center gap-2"><i data-lucide="coffee" class="w-5 h-5"></i> WEEKEND - NON LAVORATIVO</div>`;
         } else if (state.isSaving) {
-            // PULSANTE IN STATO DI CARICAMENTO
             btnContent = `<button disabled class="w-full py-5 px-4 rounded-2xl font-black text-white shadow-xl flex items-center justify-center gap-3 bg-slate-500 btn-loading cursor-not-allowed">
-                <i data-lucide="loader-2" class="w-6 h-6 animate-spin"></i> ATTENDI GOOGLE...
+                <i data-lucide="loader-2" class="w-6 h-6 animate-spin"></i> ATTENDI...
             </button>`;
         } else {
             btnContent = `<button onclick="toggleBooking()" class="w-full py-5 px-4 rounded-2xl font-black text-white shadow-xl transition-all transform active:scale-95 flex items-center justify-center gap-3 ${hasBooked ? 'bg-red-500 hover:bg-red-600 shadow-red-200/50' : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200/50'}">
@@ -498,10 +402,10 @@
             return d.getDay() === 5;
         }).length;
         
-        let floorStats = Object.keys(FLOORS).map(f => {
+        let floorStatsHtml = Object.keys(state.floorStats).map(f => {
             const booked = state.bookings.filter(b => b.date === dateStr && b.floor === f).length;
-            const max = FLOORS[f].maxSw;
-            const total = FLOORS[f].total;
+            const max = state.floorStats[f].limit;
+            const total = state.floorStats[f].total;
             
             const absPerc = total > 0 ? Math.round((booked / total) * 100) : 0;
             const maxPerc = total > 0 ? Math.round((max / total) * 100) : 0;
@@ -593,7 +497,7 @@
                         <h2 class="text-xs font-black text-slate-400 uppercase mb-6 tracking-widest flex items-center gap-2">
                             <i data-lucide="bar-chart-2" class="w-4 h-4 text-indigo-500"></i> Presenze in Studio il ${state.selectedDate.getDate()}
                         </h2>
-                        ${floorStats}
+                        ${floorStatsHtml}
                     </div>
                 </div>
                 <div class="xl:col-span-8 bg-white rounded-3xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
@@ -652,8 +556,8 @@
             const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
             
             const floorB = state.bookings.filter(b => b.date === dStr && b.floor === state.currentUser.floor);
-            const mSw = FLOORS[state.currentUser.floor]?.maxSw || 1;
-            const totalF = FLOORS[state.currentUser.floor]?.total || 1;
+            const mSw = state.floorStats[state.currentUser.floor]?.limit || 1;
+            const totalF = state.floorStats[state.currentUser.floor]?.total || 1;
             const myB = state.bookings.find(b => String(b.userId) === String(state.currentUser.id) && b.date === dStr);
             const chiusuraMotivo = getClosureReason(dObj);
             
@@ -716,7 +620,7 @@
         let modalHtml = "";
         if (state.showDayDetails) {
             const dayB = state.bookings.filter(b => b.date === state.showDayDetails);
-            let groups = Object.keys(FLOORS).map(f => {
+            let groups = Object.keys(state.floorStats).map(f => {
                 const peopleInSW = dayB.filter(b => b.floor === f);
                 if (peopleInSW.length === 0) return "";
                 return `
@@ -813,8 +717,8 @@
         
         let html = '';
         let totalCap = 0; 
-        Object.keys(FLOORS).forEach(f => totalCap += FLOORS[f].maxSw);
-        const totalUsers = USERS.length; 
+        Object.keys(state.floorStats).forEach(f => totalCap += state.floorStats[f].limit);
+        const totalUsers = state.users.length; 
         
         for (let i = 0; i < firstDay; i++) {
             html += `<div class="h-36 rounded-2xl bg-slate-50/50 border border-dashed border-slate-200"></div>`;
@@ -867,6 +771,7 @@
         }
         return html;
     }
+
     function attachBoardListeners() { 
         document.querySelectorAll('.board-day-cell').forEach(c => { 
             if(c.dataset.date) c.onclick = () => openDayDetails(c.dataset.date); 
